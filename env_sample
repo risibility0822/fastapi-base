@@ -1,0 +1,22 @@
+# 資料庫連線字串
+DB_SERVER=
+DB_DATABASE=
+DB_USER=
+DB_PASSWORD=
+
+
+# JWT Setting
+JWT_ALGORITHM=HS256
+JWT_SECRET_KEY=c2c9ac3af080d0474a65d6cf9aaf7d3e3f4f3330416644d0abf31364ef0d7953
+JWT_EXPIRE_MINUTES=15
+JWT_RE_SECRET_KEY=d5f5215eac60605d4d845ba967e7ff7cf08857eed8ef755cdbcb829ffbc633e4
+JWT_RE_EXPIRE_MINUTES=60
+
+
+# Auzre File Storage
+AFS_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=registered;AccountKey=e+YACrZuTcVK7dBIUQJCf0VYrLf9xDzKtn8mjQKeCpVDOcutXioqCidOh1E1/J34S+sqx+fas/nW+ASt3OpgqQ==;EndpointSuffix=core.windows.net"
+AFS_SHARE_NAME="chat-file"
+AFS_QR_CODE_SHARE_NAME="qr-code"
+
+# File Url
+HOST_URL = http://127.0.0.1:8000

@@ -1,0 +1,145 @@
+image: python:3.11-slim-buster
+
+definitions:
+  checkmarxStep: &scan-checkmarx
+    - step:
+        name: Checkmarx scan
+        image: atlassian/default-image:2
+        script:
+          - echo "download cxplugin"
+          - curl -o CxConsole.zip "$CXPLUGIN_URL"
+          - unzip CxConsole.zip
+          - ls -l
+          - echo "sending source to Checkmarx server"
+          - >-
+            java -Xmx1024m -jar CxConsolePlugin-CLI-1.1.30.jar Scan \
+              -CxServer "$CXSERVER_URL" \
+              -CxUser "$CXUSER" \
+              -CxPassword "$CXPASSWORD" \
+              -ProjectName "$CXPROJECT_NAME" \
+              -LocationType folder \
+              -LocationPath "$CXLOCATION_PATH" \
+              -Preset Default \
+              -ReportPDF "./CxReport/${CXREPORT_FILE}" \
+              -log "$CXLOG_PATH" -v
+        artifacts:
+          - Checkmarx/Reports/CxReport/*.pdf
+  checkCodeStep: &checkCode
+    - step:
+        name: Lint code
+        script:
+          - pip install -r requirements-dev.txt
+          - flake8 ./app
+          - mypy --install-types --non-interactive ./app
+          - bandit -r ./app -iii -lll
+
+pipelines:
+  # 只有main可以執行
+  custom: # 建構Image, 並根據Tag參數推到正式區ACR
+    正式區 - 上版Image、部署App Service:
+      - variables:
+          - name: VersionTag
+      - step:
+          name: 建構Image、推上正式區ACR
+          script:
+            - if [ "$BITBUCKET_BRANCH" != "main" ]; then echo "Release pipeline can only be triggered on main branch" && exit 1; fi
+            - docker build -t $PRD_ACR_SERVER/$IMAGE_NAME:$VersionTag . --no-cache
+            - echo $PRD_ACR_PASSWORD | docker login $PRD_ACR_SERVER -u $PRD_ACR_USERNAME --password-stdin
+            - docker push $PRD_ACR_SERVER/$IMAGE_NAME:$VersionTag
+          services:
+            - docker
+      - step:
+          name: 部署至正式區App Service
+          trigger: manual
+          script:
+            - pipe: atlassian/azure-web-apps-containers-deploy:1.2.0
+              variables:
+                AZURE_APP_ID: $PRD_AZURE_APP_ID
+                AZURE_PASSWORD: $PRD_AZURE_PASSWORD
+                AZURE_TENANT_ID: $AZURE_TENANT_ID
+                AZURE_RESOURCE_GROUP: $AZURE_RESOURCE_GROUP
+                AZURE_APP_NAME: $PRD_AZURE_APP_NAME
+                DOCKER_CUSTOM_IMAGE_NAME: $PRD_ACR_SERVER/$IMAGE_NAME:$VersionTag
+      - step:
+          name: 新增版號Tag
+          image: atlassian/default-image:2
+          script:
+            - git tag $VersionTag $BITBUCKET_COMMIT # 將 tag 附加到 commit
+            - git push origin $VersionTag # 推送 tag 到遠端
+    正式區 - 指定版本部署至App Service:
+      - variables:
+          - name: VersionTag
+      - step:
+          name: 部署至正式區App Service
+          script:
+            # 非main分支會直接return
+            - if [ "$BITBUCKET_BRANCH" != "main" ]; then echo "Release pipeline can only be triggered on main branch" && exit 1; fi
+            - pipe: atlassian/azure-web-apps-containers-deploy:1.2.0
+              variables:
+                AZURE_APP_ID: $PRD_AZURE_APP_ID
+                AZURE_PASSWORD: $PRD_AZURE_PASSWORD
+                AZURE_TENANT_ID: $AZURE_TENANT_ID
+                AZURE_RESOURCE_GROUP: $AZURE_RESOURCE_GROUP
+                AZURE_APP_NAME: $PRD_AZURE_APP_NAME
+                DOCKER_CUSTOM_IMAGE_NAME: $PRD_ACR_SERVER/$IMAGE_NAME:$VersionTag
+
+    測試區 - 指定版本部署至App Service:
+      - variables:
+          - name: VersionTag
+      - step:
+          name: 部署至測試區App Service
+          script:
+            # 非develop分支會直接return
+            - if [ "$BITBUCKET_BRANCH" != "develop" ]; then echo "Release pipeline can only be triggered on develop branch" && exit 1; fi
+            - pipe: atlassian/azure-web-apps-containers-deploy:1.2.0
+              variables:
+                AZURE_APP_ID: $DEV_AZURE_APP_ID
+                AZURE_PASSWORD: $DEV_AZURE_PASSWORD
+                AZURE_TENANT_ID: $AZURE_TENANT_ID
+                AZURE_RESOURCE_GROUP: $AZURE_RESOURCE_GROUP
+                AZURE_APP_NAME: $DEV_AZURE_APP_NAME
+                DOCKER_CUSTOM_IMAGE_NAME: $DEV_ACR_SERVER/$IMAGE_NAME:$VersionTag
+    checkmarx源掃:
+      - <<: *scan-checkmarx
+  branches:
+    "develop":
+      - <<: *checkCode # 執行 checkCodeStep 來檢查程式碼
+      - <<: *scan-checkmarx
+      - step: # 建構Image, 並根據當前時間做為Tag推到測試區ACR
+          name: 建構Image、推上測試區ACR
+          trigger: manual
+          script:
+            - if [ "$BITBUCKET_BRANCH" != "develop" ]; then echo "Release pipeline can only be triggered on develop branch" && exit 1; fi
+            - DATE_TAG="$(date -u +"%Y-%m-%dT%H-%M-%SZ")"
+            - echo "export DATE_TAG=$DATE_TAG" >> set_env.sh # 將DATE_TAG匯出至set_env.sh, 並供其他步驟使用
+            - docker build -t $DEV_ACR_SERVER/$IMAGE_NAME:$DATE_TAG . --no-cache
+            - echo $DEV_ACR_PASSWORD | docker login $DEV_ACR_SERVER -u $DEV_ACR_USERNAME --password-stdin
+            - docker push $DEV_ACR_SERVER/$IMAGE_NAME:$DATE_TAG
+          services:
+            - docker
+          artifacts: # define the artifacts to be passed to each step
+            - set_env.sh
+      - step:
+          name: 部署至測試區App Service
+          trigger: manual
+          script:
+            - source set_env.sh
+            - pipe: atlassian/azure-web-apps-containers-deploy:1.2.0
+              variables:
+                AZURE_APP_ID: $DEV_AZURE_APP_ID
+                AZURE_PASSWORD: $DEV_AZURE_PASSWORD
+                AZURE_TENANT_ID: $AZURE_TENANT_ID
+                AZURE_RESOURCE_GROUP: $AZURE_RESOURCE_GROUP
+                AZURE_APP_NAME: $DEV_AZURE_APP_NAME
+                DOCKER_CUSTOM_IMAGE_NAME: $DEV_ACR_SERVER/$IMAGE_NAME:$DATE_TAG
+          services:
+            - docker
+      - step:
+          name: 新增時間Tag
+          image: atlassian/default-image:2
+          script:
+            - source set_env.sh # 載入DATE_TAG變數
+            - git tag $DATE_TAG $BITBUCKET_COMMIT # 將 tag 附加到 commit
+            - git push origin $DATE_TAG # 推送 tag 到遠端
+    "main":
+      - <<: *checkCode # 執行 checkCodeStep 來檢查程式碼

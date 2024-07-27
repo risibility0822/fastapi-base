@@ -1,0 +1,9 @@
+[flake8]
+extend-ignore = E203, W503, D100, D104, D400, CFQ004
+max-line-length = 120
+max-function-length = 150
+max-parameters-amount = 5
+exclude = 
+    venv/*
+    app/model/db_model/*
+    */models.py

@@ -1,0 +1,1 @@
+uvicorn main:app --host localhost --port 8000 --log-config logging_config.json
